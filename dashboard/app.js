@@ -59,6 +59,20 @@
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
     return n.toFixed(3) + 'x';
   }
+  function rationaleFor(r) {
+    var m = r.model;
+    return r.name + ': ' + fmtUsd(r.tvl_usd) + ' TVL x ' + fmtRatio(m.category_multiple) + ' category (' + m.category_comparables + ' comps, median ' + fmtRatio(m.category_median) + ') x ' + fmtRatio(m.quality_adjustment) + ' chain/quality x ' + fmtRatio(m.growth_multiplier) + ' growth = about ' + fmtUsd(r.implied_value_usd);
+  }
+  function sensitivityLine(row) {
+    var m = row.model;
+    var ten = row.implied_value_usd * 0.10;
+    var base = 'A 10% TVL move shifts the claim about ' + fmtUsd(ten) + ' (10%), because value is linear in TVL';
+    if (m.category_median === null || !(m.category_multiple > 0)) {
+      return base + '; with no raw category median, the category multiple stays at ' + fmtRatio(m.category_multiple) + '.';
+    }
+    var ratio = m.category_median / m.category_multiple;
+    return base + '; repricing at the raw category median of ' + fmtRatio(m.category_median) + ' instead of ' + fmtRatio(m.category_multiple) + ' would multiply it by about ' + ratio.toFixed(1) + 'x.';
+  }
 
   // ---------------------------------------------------------------- dom
 
@@ -317,6 +331,7 @@
     var tr = el('tr', {
       'data-slug': r.slug,
       'data-selected': state.selected === r.slug ? 'true' : 'false',
+      title: rationaleFor(r),
       tabindex: '0',
       onclick: function () { openDetail(r.slug); },
       onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
@@ -404,15 +419,22 @@
   }
 
   function modelPanel() {
-    return el('section', { class: 'panel model-panel' },
+    return el('section', { class: 'panel model-panel method-panel' },
       el('div', { class: 'panel-head' },
         el('div', null,
-          el('h2', { text: 'The valuation model' }),
+          el('h2', { text: 'Method' }),
           el('p', { class: 'panel-sub', text: 'One function scores every row; no protocol name is hand-picked.' })
-        )
+        ),
+        el('div', { class: 'legend' }, el('span', { class: 'legend-item', text: 'implied value is a claim, not a price' }))
       ),
       el('div', { class: 'model-body' },
         el('div', { class: 'formula', text: 'implied = TVL × category median × chain/quality × structure × growth × maturity' }),
+        el('div', { class: 'stats method-stats' },
+          statCard('Live comparables', String(D.live_size), D.comparable_sample + ' usable mcap/TVL ratios'),
+          statCard('Usable ratios', String(D.comparable_sample), 'mcap/TVL records that set the multiples'),
+          statCard('Median multiple', D.overall_multiple.toFixed(3) + 'x', 'mcap / TVL across the set')
+        ),
+        el('p', { class: 'model-note', text: 'Every number here is the model\'s claim from this one snapshot, not a price, a quote or a promise that a token is issued. Live comparables set the multiples and are never ranked; the caveat is the point of the board.' }),
         el('div', { class: 'model-cols' },
           multipleTable('Category multiples', D.categories.slice(0, 8), 'Category'),
           multipleTable('Chain multiples', D.chains.slice(0, 8), 'Chain')
@@ -515,14 +537,18 @@
     ));
 
     var left = el('div', { class: 'detail-col' });
-    left.appendChild(section('Inputs', inputGrid([
+    var reasoning = el('div', { class: 'reasoning' });
+    reasoning.appendChild(inputGrid([
       ['TVL', fmtUsd(row.tvl_usd), fmtFull(row.tvl_usd)],
       ['Seven-day change', fmtPct(row.change_7d), row.change_7d === null ? 'not reported' : 'snapshot field'],
       ['Age since listing', fmtAge(row.age_days), row.listed_at ? 'listed ' + row.listed_at : 'not recorded'],
-      ['Category', row.category || 'Other', m.category_comparables + ' comparable records'],
+      ['Category', row.category || 'Other', m.category_comparables + ' comparable record' + (m.category_comparables === 1 ? '' : 's')],
+      ['Comparables', String(m.category_comparables), 'median ' + fmtRatio(m.category_median)],
       ['Chains', (row.chains || []).join(', ') || 'not recorded', m.chain_comparables + ' chain sample points'],
-      ['Record', 'mcap none · gecko none · symbol none', row.watchlist ? 'watchlist member' : 'pre-token, outside watchlist']
-    ])));
+      ['Record', 'mcap none · gecko none · symbol none', row.watchlist ? 'watchlist member' : 'pre-token, outside watchlist'],
+      ['Adjustments', 'category × chain/quality × structure × growth × maturity', 'raw ' + fmtUsd(m.raw_value) + ' before tie-break']
+    ]));
+    reasoning.appendChild(el('p', { class: 'sensitivity', text: sensitivityLine(row) }));
 
     var walk = el('div', { class: 'walk' });
     addWalk(walk, 'Category multiple', fmtRatio(m.category_multiple), 'median ' + fmtRatio(m.category_median) + ' from ' + m.category_comparables + ' token record' + (m.category_comparables === 1 ? '' : 's') + ', shrunk toward ' + fmtRatio(D.overall_multiple));
@@ -534,7 +560,8 @@
     addWalk(walk, 'Raw value', fmtUsd(m.raw_value), 'before the distinct-value tie-break');
     addWalk(walk, 'Tie adjustment', (tie >= 0 ? '+' : '-') + fmtUsd(Math.abs(tie)), 'deterministic ordering only');
     addWalk(walk, 'Implied value', fmtUsd(row.implied_value_usd), 'TVL × category × chain/quality × structure × growth × maturity', true);
-    left.appendChild(section('How the model got here', walk));
+    reasoning.appendChild(walk);
+    left.appendChild(section('Model reasoning', reasoning));
 
     var right = el('div', { class: 'detail-col' });
     var steps = el('ol', { class: 'steps' });

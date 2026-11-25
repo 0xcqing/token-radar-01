@@ -487,69 +487,232 @@ function chainLabel(p: SnapshotProtocol): string {
   return `${p.chains[0]} and ${p.chains[1]}`;
 }
 
-function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
+type FarmKind =
+  | 'lending'
+  | 'dex'
+  | 'perps'
+  | 'yield'
+  | 'cdp'
+  | 'chain'
+  | 'rwa'
+  | 'allocator'
+  | 'staking'
+  | 'bridge'
+  | 'insurance'
+  | 'prediction'
+  | 'stable'
+  | 'other';
+
+const FARM_ASSETS = ['USDC', 'USDT', 'ETH', 'wstETH', 'WBTC', 'DAI'];
+const FARM_PAIRS = ['USDC/ETH', 'USDC/WBTC', 'ETH/wstETH', 'WBTC/USDC', 'DAI/USDC'];
+const FARM_FEES = ['0.05%', '0.30%', '1.00%'];
+const FARM_RATIOS = ['150%', '175%', '200%'];
+const FARM_COLLATERAL = ['ETH', 'wstETH', 'WBTC', 'USDC'];
+const FARM_STABLES = ['USDC', 'USDT', 'DAI'];
+
+function slugSeed(slug: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < slug.length; i++) {
+    h ^= slug.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function pickVariant<T>(variants: T[], seed: number, salt: number): T {
+  return variants[((seed + Math.imul(salt, 0x9e3779b1)) >>> 0) % variants.length]!;
+}
+
+function pickStep<T>(variants: T[], index: number, salt: number): T {
+  return variants[(index + salt) % variants.length]!;
+}
+
+function farmKind(category: string | null): FarmKind {
+  const c = (category ?? '').toLowerCase();
+  if (c.includes('allocator')) return 'allocator';
+  if (c.includes('lend') || c.includes('collateral') || c.includes('uncollateralized')) return 'lending';
+  if (c.includes('dex')) return 'dex';
+  if (c.includes('perp') || c.includes('derivative') || c.includes('basis') || c.includes('option') || c.includes('synthetic')) return 'perps';
+  if (c.includes('cdp')) return 'cdp';
+  if (c.includes('bridge')) return 'bridge';
+  if (c.includes('chain')) return 'chain';
+  if (c.includes('rwa') || c.includes('real world')) return 'rwa';
+  if (c.includes('curator') || c.includes('yield') || c.includes('vault') || c.includes('farm')) return 'yield';
+  if (c.includes('stak') || c.includes('restak') || c.includes('anchor btc') || c.includes('decentralized btc')) return 'staking';
+  if (c.includes('insurance')) return 'insurance';
+  if (c.includes('prediction')) return 'prediction';
+  if (c.includes('stable')) return 'stable';
+  return 'other';
+}
+
+function actionFor(p: SnapshotProtocol, capital: number, chain: string, seed: number, index: number): string {
   const name = p.name;
-  const c = (p.category ?? '').toLowerCase();
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral') || c.includes('uncollateralized')) {
-    return `Supply $${capital} of USDC to ${name} on ${chain}, borrow a small amount, and keep the health factor above 1.5; rising utilization is the risk to watch.`;
+  const tvl = compactUsd(p.tvl_usd);
+  const asset = pickVariant(FARM_ASSETS, seed, 11);
+  const other = pickVariant(FARM_ASSETS, seed, 12);
+  const pair = pickVariant(FARM_PAIRS, seed, 13);
+  const fee = pickVariant(FARM_FEES, seed, 14);
+  const ratio = pickVariant(FARM_RATIOS, seed, 15);
+  const collateral = pickVariant(FARM_COLLATERAL, seed, 16);
+  const stable = pickVariant(FARM_STABLES, seed, 17);
+  switch (farmKind(p.category)) {
+    case 'lending':
+      return pickStep([
+        `Supply $${capital} of ${asset} to ${name} on ${chain} (${tvl} TVL), borrow a smaller amount of ${other}, and keep the health factor above 2 while watching utilization.`,
+        `On ${name}, a ${tvl} venue on ${chain}, supply $${capital} of ${asset} and borrow ${other} against it, holding the health factor above 2 with a liquidation check before each rate change.`,
+        `Deposit $${capital} of ${asset} into ${name} on ${chain}, a ${tvl} record, take one small ${other} loan, and prove the position stays above a 2.0 health factor in the app.`,
+      ], index, 21);
+    case 'dex':
+      return pickStep([
+        `Provide $${capital} of ${pair} liquidity on ${name} at the ${fee} fee tier on ${chain} (${tvl} TVL), then note the impermanent-loss risk before the first week is out.`,
+        `${name} on ${chain}: LP $${capital} into the ${pair} ${fee} pool of a ${tvl} venue, record the fee tier and impermanent-loss exposure, and avoid the highest-yield farm until it holds two weeks.`,
+        `Add $${capital} of ${pair} liquidity through ${name} on ${chain}, a ${tvl} venue, quote the ${fee} fee tier and the impermanent-loss range, and leave the position untouched for a full epoch.`,
+      ], index, 22);
+    case 'perps':
+      return pickStep([
+        `Open one small hedge on ${name} with $${capital} of margin on ${chain} (${tvl} TVL), keep leverage under 2x, and treat oracle and liquidation risk as the main hazards.`,
+        `Use ${name}, a ${tvl} venue on ${chain}, for a single hedge sized at $${capital}, cap leverage at 2x, and check the oracle and funding rate before every roll.`,
+        `Place a $${capital} hedge through ${name} on ${chain}, a ${tvl} book, stay below 2x leverage, and write down the liquidation price and oracle source first.`,
+      ], index, 23);
+    case 'yield':
+      return pickStep([
+        `Deposit $${capital} into ${name}'s flagship vault on ${chain} (${tvl} TVL), read the curator fee and lock-up, and skip vaults whose TVL is falling quickly.`,
+        `Put $${capital} into the main ${name} vault on ${chain}, a ${tvl} book, confirm the curator fee, the lock-up and the withdrawal queue before the deposit clears.`,
+        `On ${name}, fund $${capital} of the flagship vault on ${chain} (${tvl} TVL), note the curator fee and lock-up, and avoid any vault with a falling TVL trend.`,
+      ], index, 24);
+    case 'cdp':
+      return pickStep([
+        `Mint $${capital} of ${stable} against ${collateral} on ${name} at a ${ratio} collateral ratio on ${chain} (${tvl} TVL), and keep a buffer before the liquidation line.`,
+        `Open a ${name} CDP on ${chain}, a ${tvl} book: lock ${collateral}, mint $${capital} of ${stable}, and hold the collateral ratio at ${ratio} or better.`,
+        `Use ${name} on ${chain} to lock ${collateral} and mint $${capital} of ${stable} at ${ratio}, with the ${tvl} record and a plan to repay before the ratio nears liquidation.`,
+      ], index, 25);
+    case 'chain':
+      return pickStep([
+        `Bridge a small $${capital} to ${chain} through ${name} (${tvl} TVL), then bridge-and-stake part of it, and name the bridge risk before you send a larger amount.`,
+        `Move $${capital} onto ${chain} with ${name}, a ${tvl} chain, stake a slice through its native app, and treat bridge and validator risk as the binding constraints.`,
+        `Test ${name} with $${capital}: bridge to ${chain}, a ${tvl} network, bridge-and-stake a small part, and record the bridge risk and withdrawal delay first.`,
+      ], index, 26);
+    case 'rwa':
+      return pickStep([
+        `Mint $${capital} of ${name}'s asset on ${chain} (${tvl} TVL), then test the redeem path and note the gating such as KYC, whitelist or lock-up before adding size.`,
+        `On ${name}, a ${tvl} book on ${chain}, mint $${capital}, walk the redeem route once, and write down the gating and settlement delay that apply to your jurisdiction.`,
+        `Use ${name}'s mint path for $${capital} on ${chain}, a ${tvl} record, confirm the redemption gate and issuer terms, and keep the position small while the record still shows no token.`,
+      ], index, 27);
+    case 'allocator':
+      return pickStep([
+        `Deposit $${capital} with ${name} on ${chain} (${tvl} TVL), name its fee model such as management, performance or both, and check how the allocator reports NAV before scaling.`,
+        `Allocate $${capital} through ${name} on ${chain}, a ${tvl} book, read the management and performance fees, and confirm how the allocator marks positions before you add more.`,
+        `Place $${capital} with the ${name} allocator on ${chain} (${tvl} TVL), quote its fee model and reporting cadence, and avoid any strategy whose NAV is not published.`,
+      ], index, 28);
+    case 'staking':
+      return pickStep([
+        `Stake $${capital} of ${chain}'s native asset through ${name} (${tvl} TVL), keep the receipt token, and record slashing and validator risk before adding more.`,
+        `Use ${name} on ${chain}, a ${tvl} staking book, to stake $${capital}, hold the liquid receipt, and read the slashing and unbonding terms before the first reward snapshot.`,
+        `Stake $${capital} through ${name} on ${chain}, a ${tvl} book, note the receipt token and unbonding period, and watch validator concentration as the main risk.`,
+      ], index, 29);
+    case 'bridge':
+      return pickStep([
+        `Route a small $${capital} through ${name} to ${chain} (${tvl} TVL), confirm the bridge risk and withdrawal delay, and only then move a larger amount.`,
+        `Send $${capital} across ${name} into ${chain}, a ${tvl} bridge, test the return path, and record the bridge risk and any wrapped-asset exposure before scaling.`,
+        `Bridge $${capital} with ${name} onto ${chain} (${tvl} TVL), name the bridge risk and destination gas needs, and keep the first transfer deliberately small.`,
+      ], index, 30);
+    case 'insurance':
+      return pickStep([
+        `Buy $${capital} of cover from ${name} on ${chain} (${tvl} TVL), check the deductible and the covered protocol, and treat the cover itself as the position to hold.`,
+        `Spend $${capital} on ${name} cover for a ${chain} position, a ${tvl} book, confirm the deductible and exclusions, and hold the policy through its full term.`,
+      ], index, 31);
+    case 'prediction':
+      return pickStep([
+        `Fund $${capital} on ${name} on ${chain} (${tvl} TVL), place one position in a liquid market, and check the resolution source before the event closes.`,
+        `Use $${capital} on ${name}, a ${tvl} market on ${chain}, for one liquid position, read the resolution rules, and accept that it can go to zero.`,
+      ], index, 32);
+    case 'stable':
+      return pickStep([
+        `Mint or deposit $${capital} of the stable asset through ${name} on ${chain} (${tvl} TVL), check the collateral ratio and peg history, and avoid leverage on the stable.`,
+        `Use ${name} on ${chain}, a ${tvl} stable book, to mint $${capital} of its stable, confirm the collateral ratio and peg record, and keep the position unlevered.`,
+      ], index, 33);
+    default:
+      return pickStep([
+        `Use ${name}'s own deposit path on ${chain} for $${capital} (${tvl} TVL), confirm the contract and the fee, and keep the first position small enough to exit.`,
+        `Deposit $${capital} through ${name}'s official app on ${chain}, a ${tvl} record, read the fee and withdrawal terms, and check the contract before you sign.`,
+        `Follow ${name}'s own deposit flow on ${chain} with $${capital}, a ${tvl} record, note the fee and lock-up, and verify the contract address on the protocol site first.`,
+      ], index, 34);
   }
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged') || c.includes('farm') || c.includes('liquidity')) {
-    return `Add $${capital} of USDC-ETH liquidity to ${name}'s deepest pool on ${chain}, check the fee tier and impermanent loss, and leave it for several weeks.`;
-  }
-  if (c.includes('bridge')) {
-    return `Bridge $${capital} of USDC to ${chain} through ${name}, then swap or deposit on the destination chain; test with a small amount because bridge risk is high.`;
-  }
-  if (c.includes('staking') || c.includes('restak')) {
-    return `Stake $${capital} of ${chain}'s native asset through ${name}, keep the receipt token, and watch slashing and validator risk before adding more.`;
-  }
-  if (c.includes('perpetual') || c.includes('derivative') || c.includes('option') || c.includes('synthetic')) {
-    return `Deposit $${capital} of USDC margin on ${name}, open one small hedge or option, and keep leverage under 2x; liquidation and oracle risk are the hazards.`;
-  }
-  if (c.includes('prediction')) {
-    return `Fund $${capital} of USDC on ${name}, place one position in a liquid market, and check the resolution source before betting; the position can go to zero.`;
-  }
-  if (c.includes('curator') || c.includes('allocator') || c.includes('vault')) {
-    return `Deposit $${capital} of USDC into ${name}'s flagship vault on ${chain}, read the curator fee and lock-up, and avoid vaults whose TVL is falling fast.`;
-  }
-  if (c.includes('stable')) {
-    return `Mint or deposit $${capital} of the stable asset through ${name} on ${chain}, check the collateral ratio and peg history, and avoid leverage on the stable.`;
-  }
-  if (c.includes('rwa') || c.includes('reserve')) {
-    return `Mint $${capital} of ${name}'s yield asset on ${chain}, confirm the issuer and redemption terms, and keep the position small while the record shows no token.`;
-  }
-  if (c.includes('insurance')) {
-    return `Buy $${capital} of cover from ${name} on ${chain}, check the deductible and the covered protocol, and treat the cover itself as the position to hold.`;
-  }
-  if (c.includes('chain')) {
-    return `Bridge or deposit $${capital} of USDC onto ${chain}, use ${name}'s native app for one swap and one stake, and keep gas funds on both sides of the bridge.`;
-  }
-  return `Deposit $${capital} of USDC into ${name} on ${chain}, keep the position open, and check the contract and TVL trend before adding more.`;
 }
 
 /** A protocol's farm plan: six concrete steps, four at the very least, each inside 40..220 characters. */
-export function farmSteps(p: SnapshotProtocol, value: ValueModel): string[] {
+export function farmSteps(p: SnapshotProtocol, value: ValueModel, index = 0): string[] {
   const chain = chainLabel(p);
   const capital = capitalFor(p.tvl_usd);
   const hold = holdDaysFor(value.age_days);
-  const ageText = value.age_days === null ? 'an unrecorded period' : `${value.age_days} days`;
-  const steps = [
-    `Confirm ${p.name} still records no token on its own site and DefiLlama, then use a fresh wallet funded only with money you can lose; a launch is not promised.`,
-    actionFor(p, capital, chain),
-    `Return weekly to make one qualifying action, such as a deposit, borrow, swap or vote, and watch ${p.name}'s official points or rewards page for its snapshot rule.`,
-    `Hold for at least ${hold} days across two or more weekly snapshots; ${p.name} has run ${ageText} while the record shows no token, so patience is the edge, not a guarantee.`,
-    `Before withdrawing, claim any reward only from ${p.name}'s official app, never pay a fee to claim, log the wallet and dates, and recheck the record for a token before adding size.`,
-  ];
-  if (value.structure_derivative) {
-    steps.push(`This record is a ${value.structure_kind}, so a parent protocol may already have a token; confirm the parent and treat any points program as speculative.`);
-  } else {
-    steps.push(`Set a hard stop: if ${p.name}'s TVL falls more than 30% in a week or withdrawals pause, unwind rather than average down, and keep the position small.`);
-  }
-  return steps.map(clampStep).slice(0, 6);
+  const seed = slugSeed(p.slug);
+  const ageText = value.age_days === null ? 'an unrecorded age' : `${value.age_days} days`;
+  const tvl = compactUsd(p.tvl_usd);
+  const week = pct(p.change_7d);
+  const trend = p.change_7d === null ? 'flat' : p.change_7d >= 0 ? 'rising' : 'falling';
+  const chainCount = p.chains.length === 0 ? 1 : new Set(p.chains).size;
+  const mcapText = p.mcap_usd === null ? 'no listed market cap' : `a ${compactUsd(p.mcap_usd)} market cap`;
+  const stop = 12 + (seed % 9);
+  const stopContext =
+    p.change_7d === null
+      ? ' with no 7d print to lean on'
+      : p.change_7d < 0
+        ? ` (this week is ${week}; the cumulative move would be about -${Math.round(Math.abs(p.change_7d) + stop)}%)`
+        : ` after a ${week} week`;
+
+  const verify = pickVariant([
+    `Check ${p.name}'s own site and DefiLlama first: market cap, CoinGecko id and symbol must all stay empty, and this plan starts on ${chain}.`,
+    `Before depositing, open ${p.name}'s official site and its DefiLlama page and confirm the record still names no token in any of its three fields; start on ${chain}.`,
+    `Open ${p.name}'s app and DefiLlama together and verify that market cap, CoinGecko id and symbol are still blank; begin on ${chain}.`,
+    `Start on ${p.name}'s own site and DefiLlama: the record has to keep showing no token in the market-cap, CoinGecko-id and symbol fields, and you begin on ${chain}.`,
+  ], index, 1);
+
+  const diligence = value.structure_derivative
+    ? pickVariant([
+        `${p.name} is a ${value.structure_kind}, but the numbers are TVL ${tvl}, 7d ${week}, ${ageText} on record and ${chainCount} chain(s); check whether a parent token already trades before trusting the trend.`,
+        `Diligence on ${p.name}: ${tvl} TVL, ${week} over 7d, ${ageText} old, ${chainCount} chain(s) and ${mcapText}; as a ${value.structure_kind}, trace the parent token and the next snapshot together.`,
+        `For the ${value.structure_kind} record ${p.name}, weigh ${tvl} TVL and ${week} over 7d against ${ageText} of history and ${chainCount} chain(s); a parent token already trading would disqualify the plan.`,
+        `${p.name} shows ${tvl} TVL and ${week} over 7d across ${chainCount} chain(s) with ${ageText} on record; because it is a ${value.structure_kind}, check the parent token and any fresh snapshot before adding.`,
+      ], index, 3)
+    : pickVariant([
+        `Diligence on ${p.name}: TVL ${tvl}, 7d ${week}, ${ageText}, ${chainCount} chain(s) and ${mcapText}; a snapshot that reverses the trend or drops a chain is the one that disqualifies it.`,
+        `Watch ${p.name}'s next snapshot: ${tvl} TVL, ${week} over 7d, ${ageText} on record, ${chainCount} chain(s) and ${mcapText}; a break below that TVL would make this claim stale.`,
+        `For ${p.name}, note ${tvl} TVL, a ${week} week, ${ageText} of history, ${chainCount} chain(s) and ${mcapText}; the diligence test is whether the next print holds the trend and the chain set.`,
+        `${p.name} shows ${tvl} TVL and ${week} over 7d across ${chainCount} chain(s) with ${ageText} on record and ${mcapText}; any fresh snapshot below the current TVL or missing a chain should reset the plan.`,
+      ], index, 3);
+
+  const horizon = pickVariant([
+    `Hold about ${hold} days for a record ${ageText} old with a ${trend} week; the snapshot rule is two weekly prints at or above ${tvl} before scaling, and an exit if a token appears.`,
+    `Plan a ${hold}-day hold: ${ageText} of history and a ${trend} seven-day move argue for waiting for two weekly snapshots near ${tvl} before adding, and leaving on any token.`,
+    `Set the horizon at ${hold} days because the record is ${ageText} old and the week is ${trend}; only scale after two snapshots hold ${tvl}, and exit the moment a token field fills.`,
+    `Use a ${hold}-day horizon against ${ageText} of history and a ${trend} trend; the rule is two weekly snapshots at ${tvl} or better before adding, with a token in the record as the exit.`,
+  ], index, 4);
+
+  const exit = pickVariant([
+    `Exit and claim only on ${p.name}'s official app: revoke approvals after each withdrawal, budget for gas and any withdrawal fee, and recheck the record before you redeposit.`,
+    `When leaving ${p.name}, claim from its own app, clear token approvals, account for withdrawal fees and gas, and re-open the DefiLlama record before any redeposit.`,
+    `Take rewards from ${p.name}'s official app, never a third-party claim link; revoke approvals, price the exit fees, and confirm the token fields are still empty afterward.`,
+    `Close the ${p.name} position in the protocol app, reset approvals on ${chain}, keep a note of fees paid, and recheck that the record still shows no token before returning.`,
+  ], index, 5);
+
+  const stopStep = pickVariant([
+    `Hard stop: if ${p.name}'s TVL falls another ${stop}% in a week${stopContext}, unwind rather than average down, and size the position so that stop is affordable.`,
+    `Set the unwind trigger at a ${stop}% weekly TVL drop for ${p.name}${stopContext}; a paused withdrawal counts too, so keep the position small enough to exit in one go.`,
+    `Treat a ${stop}% fall in ${p.name}'s TVL over seven days as the hard stop${stopContext}, and unwind on a withdrawal pause instead of adding to a losing position.`,
+    `If ${p.name} gives back ${stop}% of TVL in a week${stopContext}, exit and reassess; never average down into a falling record that still shows no token.`,
+  ], index, 6);
+
+  return [verify, actionFor(p, capital, chain, seed, index), diligence, horizon, exit, stopStep].map(clampStep);
 }
 
 function whatWouldChange(p: SnapshotProtocol, value: ValueModel): string[] {
+  const medianText = value.category_median === null ? 'no raw category median' : `a raw median of ${value.category_median.toFixed(2)}x`;
+  const repricing =
+    value.category_median !== null && value.category_multiple > 0
+      ? `; repricing at that raw median would multiply the claim by about ${(value.category_median / value.category_multiple).toFixed(1)}x`
+      : '';
   const out: string[] = [
-    `TVL is ${compactUsd(p.tvl_usd)} and the category multiple is ${value.category_multiple.toFixed(2)}x from ${value.category_comparables} comparable token record${value.category_comparables === 1 ? '' : 's'}; a 10% move in either moves the value about 10%.`,
+    `TVL is ${compactUsd(p.tvl_usd)} and the category multiple is ${value.category_multiple.toFixed(2)}x from ${value.category_comparables} comparable token record${value.category_comparables === 1 ? '' : 's'} with ${medianText}; a 10% TVL move shifts the claim about 10%${repricing}.`,
     `Seven-day growth is ${pct(p.change_7d)}; a 20-point swing moves the implied value by about ${Math.round(MODEL.growth_weight * 20)}% because growth is weighted at ${MODEL.growth_weight}.`,
     `The chain factor is ${value.chain_factor.toFixed(2)}x from ${value.chain_comparables} chain sample point${value.chain_comparables === 1 ? '' : 's'}, and the maturity multiplier stops rising at ${MODEL.maturity_days} days.`,
     `If a market cap, CoinGecko id or symbol appears in the record, this protocol leaves the pre-token board and joins the live-token comparables.`,
@@ -605,7 +768,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       confidence_label: entry.value.confidence_label,
       structure,
       model: modelValue,
-      farm_steps: farmSteps(entry.p, modelValue),
+      farm_steps: farmSteps(entry.p, modelValue, i),
       what_would_change: whatWouldChange(entry.p, modelValue),
     });
   }
